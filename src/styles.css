@@ -1,0 +1,224 @@
+:root {
+  --bg: #0f141b;
+  --panel: #171f2a;
+  --panel-2: #1e2937;
+  --border: #2b3a4d;
+  --text: #d7e1ee;
+  --muted: #8aa0b8;
+  --accent: #4f9dff;
+  --good: #3fcf8e;
+  --warn: #e8b34b;
+  --bad: #ef6a6a;
+  --dead: #b85555;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  font-size: 14px;
+}
+
+.app {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+h1 {
+  font-size: 20px;
+  margin: 0 0 4px;
+}
+
+h2 {
+  font-size: 15px;
+  margin: 0 0 10px;
+  color: var(--accent);
+}
+
+h3 {
+  font-size: 13px;
+  margin: 14px 0 6px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin: 0 0 16px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.slot-row {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  margin-bottom: 8px;
+}
+
+.slot-row.banned {
+  outline: 1px dashed var(--warn);
+  opacity: 0.75;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.badge.error { background: rgba(239, 106, 106, 0.18); color: var(--bad); }
+.badge.warning { background: rgba(232, 179, 75, 0.18); color: var(--warn); }
+.badge.ok { background: rgba(63, 207, 142, 0.18); color: var(--good); }
+.badge.info { background: rgba(79, 157, 255, 0.18); color: var(--accent); }
+.badge.dead { background: rgba(184, 85, 85, 0.25); color: var(--dead); }
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08111d;
+  font-weight: 600;
+}
+
+button.danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+select, input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+  min-width: 160px;
+}
+
+.diag {
+  border-left: 3px solid var(--border);
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  background: var(--panel-2);
+  border-radius: 0 6px 6px 0;
+}
+
+.diag.error { border-left-color: var(--bad); }
+.diag.warning { border-left-color: var(--warn); }
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.stat-cell {
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.stat-cell .k { color: var(--muted); font-size: 11px; }
+.stat-cell .v { font-weight: 600; }
+.delta-pos { color: var(--good); }
+.delta-neg { color: var(--bad); }
+
+.trace {
+  padding: 6px 8px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.trace.inactive { opacity: 0.55; }
+.trace .reason { color: var(--warn); }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+th, td {
+  border: 1px solid var(--border);
+  padding: 4px 6px;
+  text-align: center;
+}
+
+th { background: var(--panel-2); color: var(--muted); }
+
+.notices {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10;
+}
+
+.notice {
+  padding: 10px 14px;
+  border-radius: 8px;
+  max-width: 380px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.notice.info { background: #1c3350; border: 1px solid var(--accent); }
+.notice.reject { background: #411f24; border: 1px solid var(--bad); }
+
+.muted { color: var(--muted); }
+.mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+.compare-win { color: var(--good); font-weight: 700; }
+.compare-lose { color: var(--bad); }
