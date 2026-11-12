@@ -30,10 +30,15 @@ check('2件套装激活2档', true);
 // 变化报告出现
 await expect(page.locator('.trace', { hasText: 'dragon_t2' }).first()).toBeVisible();
 check('发布报告含激活来源 dragon_t2', true);
+// 增量审计面板：真实发布后显示阶段耗时与等价结论
+await expect(page.locator('.panel', { hasText: '增量求值审计' }).locator('.badge', { hasText: '增量与全量等价' })).toBeVisible();
+check('审计面板显示增量与全量等价', true);
+await expect(page.locator('.panel', { hasText: '增量求值审计' }).locator('td', { hasText: '依赖查找' })).toBeVisible();
+check('审计面板展示依赖查找阶段耗时', true);
 
 // 3. 攻击并记录修订 1 结果
 await page.getByRole('button', { name: /执行攻击/ }).click();
-await expect(page.locator('table tbody tr')).toHaveCount(6);
+await expect(page.locator('.panel', { hasText: '战斗假人' }).locator('table tbody tr')).toHaveCount(6);
 const r1Text = await page.locator('.badge', { hasText: /总伤害/ }).first().textContent();
 const r1Damage = Number(r1Text!.replace(/\D/g, ''));
 check('修订1产生6回合战斗结果', r1Damage > 0, r1Text ?? '');
@@ -49,6 +54,10 @@ const tierChange = await page.locator('.trace', { hasText: '套装 set_dragon �
 check('变化报告记录档位 2→4', tierChange);
 const skillGain = await page.locator('.trace', { hasText: '获得技能' }).first().isVisible();
 check('4档技能获得被记录', skillGain);
+const audit = page.locator('.panel', { hasText: '增量求值审计' });
+const tierBadge = await audit.locator('.badge', { hasText: '跨档位' }).textContent();
+const tierN = Number((tierBadge ?? '').replace(/\D/g, ''));
+check('审计面板记录本次跨档位数 > 0', tierN > 0, tierBadge ?? '');
 await page.getByRole('button', { name: /执行攻击/ }).click();
 const r2Text = await page.locator('.badge', { hasText: /总伤害/ }).first().textContent();
 const r2Damage = Number(r2Text!.replace(/\D/g, ''));

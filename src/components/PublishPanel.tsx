@@ -15,7 +15,8 @@ export function PublishPanel() {
         <span className="badge info">当前修订 #{revision}</span>
       </div>
       <p className="muted" style={{ fontSize: 12 }}>
-        发布采用“先全量校验、后单次替换、再全量重算”的管线；任何 error 都会原样拒绝，
+        发布采用“先全量校验、后单次替换”的原子管线，派生状态由增量求值器计算，
+        并在发布后立刻用全量参照逐规则对照（见“增量求值审计”面板）。任何 error 都会原样拒绝，
         不会出现逐件脱装留下的半套状态。
       </p>
 

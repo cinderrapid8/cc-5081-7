@@ -1,3 +1,4 @@
+import { AuditPanel } from './components/AuditPanel';
 import { BuilderPanel } from './components/BuilderPanel';
 import { CharacterPanel } from './components/CharacterPanel';
 import { CombatPanel } from './components/CombatPanel';
@@ -20,6 +21,7 @@ export function App() {
         <DerivedPanel />
         <PublishPanel />
         <CombatPanel />
+        <AuditPanel />
       </div>
       <Notices />
     </div>

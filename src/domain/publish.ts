@@ -42,7 +42,14 @@ export interface PublishArgs {
   currentRevision: number;
 }
 
-function traceKey(t: EffectTrace): string {
+/** 求值后端：全量参照实现或增量实现，二者必须产出完全相同的派生状态 */
+export type DeriveFn = (
+  loadout: Loadout,
+  bannedSlots: string[],
+  baseStats: StatMap,
+) => DerivedState;
+
+export function traceKey(t: EffectTrace): string {
   return t.source.kind === 'item'
     ? `item:${t.source.uid}:${t.ruleId}`
     : `set:${t.source.setId}:${t.source.threshold}:${t.ruleId}`;
@@ -65,11 +72,68 @@ function diffStats(before: StatMap, after: StatMap): StatMap {
 }
 
 /**
- * 发布管线：先完整校验草稿，任何 error 都原样拒绝（active 负载与战斗结果不变）；
- * 通过后单次原子替换负载并全量重算，再产出来源级变化报告。
- * 不存在“先逐件脱装再留下半套”的中间状态。
+ * 来源级变化报告：逐来源（物品实例 / 套装档位）比较激活集合，
+ * 而不是只看总属性差值，避免“总属性相同但来源关系错误”被误判为等价。
  */
-export function publishRevision(args: PublishArgs): PublishResult {
+export function buildChangeReport(
+  beforeDerived: DerivedState,
+  afterDerived: DerivedState,
+  revision: number,
+): ChangeReport {
+  const beforeActive = new Set(beforeDerived.traces.filter((t) => t.active).map(traceKey));
+  const afterActive = new Set(afterDerived.traces.filter((t) => t.active).map(traceKey));
+  const labelByKey = new Map<string, string>();
+  for (const t of [...beforeDerived.traces, ...afterDerived.traces]) {
+    labelByKey.set(traceKey(t), sourceLabel(t));
+  }
+
+  const sourcesActivated = [...afterActive]
+    .filter((k) => !beforeActive.has(k))
+    .map((k) => labelByKey.get(k)!);
+  const sourcesDeactivated = [...beforeActive]
+    .filter((k) => !afterActive.has(k))
+    .map((k) => labelByKey.get(k)!);
+
+  const skillsGained = afterDerived.skills.filter((s) => !beforeDerived.skills.includes(s));
+  const skillsLost = beforeDerived.skills.filter((s) => !afterDerived.skills.includes(s));
+
+  const setIds = new Set([...Object.keys(beforeDerived.setTiers), ...Object.keys(afterDerived.setTiers)]);
+  const setTierChanges = [...setIds]
+    .map((setId) => ({
+      setId,
+      from: beforeDerived.setTiers[setId] ?? 0,
+      to: afterDerived.setTiers[setId] ?? 0,
+    }))
+    .filter((c) => c.from !== c.to);
+
+  return {
+    revision,
+    statDeltas: diffStats(beforeDerived.stats, afterDerived.stats),
+    skillsGained,
+    skillsLost,
+    sourcesActivated,
+    sourcesDeactivated,
+    setTierChanges,
+  };
+}
+
+function defaultDerive(
+  catalog: Catalog,
+  inventory: ItemInstance[],
+): DeriveFn {
+  return (loadout, bannedSlots, baseStats) =>
+    evaluate({ catalog, inventory, loadout, bannedSlots, baseStats });
+}
+
+/**
+ * 发布管线：先完整校验草稿（校验项与两条求值路径完全相同，不因性能优化而减少），
+ * 任何 error 都原样拒绝（active 负载与战斗结果不变）；通过后单次原子替换负载并求值，
+ * 再产出来源级变化报告。不存在“先逐件脱装再留下半套”的中间状态。
+ *
+ * deriveFn 仅替换“通过校验后的求值”这一阶段：参照实现逐次全量重算，
+ * 增量实现只重算受槽位/标签/档位/基础属性变化影响的规则；两阶段之外没有隐藏工作。
+ */
+export function publishRevision(args: PublishArgs, deriveFn?: DeriveFn): PublishResult {
   const diagnostics = validate({
     catalog: args.catalog,
     inventory: args.inventory,
@@ -84,38 +148,8 @@ export function publishRevision(args: PublishArgs): PublishResult {
 
   const nextRevision = args.currentRevision + 1;
   const newLoadout: Loadout = { ...args.draft };
-  const derived = evaluate({
-    catalog: args.catalog,
-    inventory: args.inventory,
-    loadout: newLoadout,
-    bannedSlots: args.bannedSlots,
-    baseStats: args.baseStats,
-  });
-
-  const beforeActive = new Set(args.activeDerived.traces.filter((t) => t.active).map(traceKey));
-  const afterActive = new Set(derived.traces.filter((t) => t.active).map(traceKey));
-  const labelByKey = new Map<string, string>();
-  for (const t of [...args.activeDerived.traces, ...derived.traces]) {
-    labelByKey.set(traceKey(t), sourceLabel(t));
-  }
-
-  const sourcesActivated = [...afterActive].filter((k) => !beforeActive.has(k)).map((k) => labelByKey.get(k)!);
-  const sourcesDeactivated = [...beforeActive].filter((k) => !afterActive.has(k)).map((k) => labelByKey.get(k)!);
-
-  const skillsGained = derived.skills.filter((s) => !args.activeDerived.skills.includes(s));
-  const skillsLost = args.activeDerived.skills.filter((s) => !derived.skills.includes(s));
-
-  const setIds = new Set([
-    ...Object.keys(args.activeDerived.setTiers),
-    ...Object.keys(derived.setTiers),
-  ]);
-  const setTierChanges = [...setIds]
-    .map((setId) => ({
-      setId,
-      from: args.activeDerived.setTiers[setId] ?? 0,
-      to: derived.setTiers[setId] ?? 0,
-    }))
-    .filter((c) => c.from !== c.to);
+  const derive = deriveFn ?? defaultDerive(args.catalog, args.inventory);
+  const derived = derive(newLoadout, args.bannedSlots, args.baseStats);
 
   return {
     ok: true,
@@ -123,20 +157,15 @@ export function publishRevision(args: PublishArgs): PublishResult {
     revision: nextRevision,
     loadout: newLoadout,
     derived,
-    changes: {
-      revision: nextRevision,
-      statDeltas: diffStats(args.activeDerived.stats, derived.stats),
-      skillsGained,
-      skillsLost,
-      sourcesActivated,
-      sourcesDeactivated,
-      setTierChanges,
-    },
+    changes: buildChangeReport(args.activeDerived, derived, nextRevision),
   };
 }
 
 /** 草稿预览：即使存在阻断错误也尽力求值，界面必须同时展示诊断，不得把预览当作战斗依据 */
-export function previewDraft(args: Omit<PublishArgs, 'active' | 'activeDerived' | 'currentRevision'>): {
+export function previewDraft(
+  args: Omit<PublishArgs, 'active' | 'activeDerived' | 'currentRevision'>,
+  deriveFn?: DeriveFn,
+): {
   diagnostics: Diagnostic[];
   derived: DerivedState;
 } {
@@ -147,12 +176,7 @@ export function previewDraft(args: Omit<PublishArgs, 'active' | 'activeDerived' 
     bannedSlots: args.bannedSlots,
     alive: args.alive,
   });
-  const derived = evaluate({
-    catalog: args.catalog,
-    inventory: args.inventory,
-    loadout: args.draft,
-    bannedSlots: args.bannedSlots,
-    baseStats: args.baseStats,
-  });
+  const derive = deriveFn ?? defaultDerive(args.catalog, args.inventory);
+  const derived = derive(args.draft, args.bannedSlots, args.baseStats);
   return { diagnostics, derived };
 }

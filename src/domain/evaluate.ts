@@ -1,18 +1,17 @@
 import type {
   Catalog,
-  Condition,
   DerivedState,
   EffectRule,
   EffectSource,
   EffectTrace,
   Loadout,
   SlotId,
-  StatKey,
   StatMap,
   SuppressedItem,
 } from './types';
+import { addStats, evalCondition } from './conditions';
 
-interface ResolvedEntry {
+export interface ResolvedEntry {
   slot: SlotId;
   uid: string;
   itemId: string;
@@ -27,69 +26,13 @@ export interface EvalInput {
   baseStats: StatMap;
 }
 
-function addStats(acc: StatMap, delta: StatMap): void {
-  for (const [k, v] of Object.entries(delta) as [StatKey, number][]) {
-    acc[k] = (acc[k] ?? 0) + v;
-  }
-}
-
-function describeCondition(cond: Condition): string {
-  switch (cond.kind) {
-    case 'always':
-      return '无条件';
-    case 'statAtLeast':
-      return `需要 ${cond.stat} >= ${cond.value}`;
-    case 'statAtMost':
-      return `需要 ${cond.stat} <= ${cond.value}`;
-    case 'setTierAtLeast':
-      return `需要套装 ${cond.setId} 达到第 ${cond.tier} 档`;
-    case 'hasTag':
-      return `需要在装物品带标签 ${cond.tag}`;
-  }
-}
-
-function evalCondition(
-  cond: Condition,
-  ctx: {
-    baseStats: StatMap;
-    setTiers: Record<string, number>;
-    activeTags: Set<string>;
-  },
-): { ok: boolean; reason?: string } {
-  switch (cond.kind) {
-    case 'always':
-      return { ok: true };
-    case 'statAtLeast': {
-      const v = ctx.baseStats[cond.stat] ?? 0;
-      return v >= cond.value
-        ? { ok: true }
-        : { ok: false, reason: `${describeCondition(cond)}，当前为 ${v}` };
-    }
-    case 'statAtMost': {
-      const v = ctx.baseStats[cond.stat] ?? 0;
-      return v <= cond.value
-        ? { ok: true }
-        : { ok: false, reason: `${describeCondition(cond)}，当前为 ${v}` };
-    }
-    case 'setTierAtLeast': {
-      const tier = ctx.setTiers[cond.setId] ?? 0;
-      return tier >= cond.tier
-        ? { ok: true }
-        : { ok: false, reason: `${describeCondition(cond)}，当前为第 ${tier} 档` };
-    }
-    case 'hasTag':
-      return ctx.activeTags.has(cond.tag)
-        ? { ok: true }
-        : { ok: false, reason: describeCondition(cond) };
-  }
-}
-
 /**
- * 全量重算派生状态。每次发布都从 (baseStats + 当前负载) 完整重算，
- * 不存在“逐件脱装的增量残留”——来源被移除后，其全部效果随重算自然撤销。
+ * 全量重算派生状态，作为增量路径的参照实现。
+ * 每次求值都从 (baseStats + 当前负载) 完整重算：不存在“逐件脱装的增量残留”，
+ * 来源被移除后其全部效果随重算自然撤销。
  */
 export function evaluate(input: EvalInput): DerivedState {
-  const { catalog, loadout, bannedSlots, baseStats } = input;
+  const { catalog, loadout, bannedSlots } = input;
   const banned = new Set(bannedSlots);
 
   const uidToItem = new Map(input.inventory.map((i) => [i.uid, i.itemId]));
@@ -100,6 +43,20 @@ export function evaluate(input: EvalInput): DerivedState {
     if (!itemId || !catalog.items[itemId]) continue;
     entries.push({ slot, uid, itemId, suppressed: banned.has(slot) });
   }
+  return evaluateResolved({ catalog, baseStats: input.baseStats, entries });
+}
+
+/**
+ * 参照实现的核心：接收已解析的负载条目，避免调用方在批量委托时
+ * 重复做 uid→item 映射。evaluate() 与增量路径的批量委托共用这一段求值逻辑，
+ * 保证两条路径的条件语义、来源标记与发布顺序完全同源。
+ */
+export function evaluateResolved(input: {
+  catalog: Catalog;
+  baseStats: StatMap;
+  entries: ResolvedEntry[];
+}): DerivedState {
+  const { catalog, baseStats, entries } = input;
 
   const suppressed: SuppressedItem[] = entries
     .filter((e) => e.suppressed)
@@ -116,7 +73,8 @@ export function evaluate(input: EvalInput): DerivedState {
   for (const e of activeEntries) {
     const setId = catalog.items[e.itemId].setId;
     if (setId) pieceCounts[setId] = (pieceCounts[setId] ?? 0) + 1;
-  }  const setTiers: Record<string, number> = {};
+  }
+  const setTiers: Record<string, number> = {};
   for (const [setId, count] of Object.entries(pieceCounts)) {
     const set = catalog.sets[setId];
     if (!set) continue;

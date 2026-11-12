@@ -10,7 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench": "node --experimental-strip-types node_modules/vite-node/vite-node.mjs --root . bench/run-bench.ts",
+    "bench:quick": "node --experimental-strip-types node_modules/vite-node/vite-node.mjs --root . bench/run-bench.ts --quick"
   },
   "dependencies": {
     "react": "^18.3.1",

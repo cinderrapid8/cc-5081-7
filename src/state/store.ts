@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { evaluate } from '../domain/evaluate';
+import { IncrementalEvaluator, type IncrementalMetrics } from '../domain/incremental';
+import { compareDerived, compareChangeReports, diffSources } from '../domain/equivalence';
 import { previewDraft, publishRevision, type ChangeReport } from '../domain/publish';
 import { runCombat, type AttackInput, type CombatResult } from '../domain/combat';
 import { BASE_STATS, DUMMY, createCatalog, createInventory, SLOTS } from '../domain/seed';
@@ -16,6 +18,20 @@ interface SessionNotice {
   id: number;
   kind: 'info' | 'reject';
   message: string;
+}
+
+export interface AuditSnapshot {
+  revision: number;
+  /** 本次求值使用的后端 */
+  backend: 'incremental' | 'full';
+  metrics: IncrementalMetrics | null;
+  equivalence: {
+    equivalent: boolean;
+    differences: string[];
+    changeReportDifferences: string[];
+    incrementalDeactivated: string[];
+    referenceDeactivated: string[];
+  } | null;
 }
 
 interface StoreState {
@@ -35,7 +51,8 @@ interface StoreState {
 
   lastChanges: ChangeReport | null;
   lastPublishErrors: Diagnostic[] | null;
-  history: { revision: number; changes: ChangeReport }[];
+  lastVerdict: AuditSnapshot | null;
+  history: { revision: number; changes: ChangeReport; verdict: AuditSnapshot | null }[];
   notices: SessionNotice[];
 
   attackInput: AttackInput;
@@ -66,22 +83,38 @@ const initialLoadout: Loadout = {
   [SLOTS.ACCESSORY]: 'u-amulet',
 };
 
-function derive(loadout: Loadout, bannedSlots: string[]): DerivedState {
+/** 独立的两套求值器：活动方案与草稿各自维护引用索引与规则缓存，互不影响 */
+const activeEvaluator = new IncrementalEvaluator(catalog, inventory);
+const draftEvaluator = new IncrementalEvaluator(catalog, inventory);
+activeEvaluator.evaluate({ loadout: initialLoadout, bannedSlots: [], baseStats: BASE_STATS });
+
+function fullDerived(loadout: Loadout, bannedSlots: string[]): DerivedState {
   return evaluate({ catalog, inventory, loadout, bannedSlots, baseStats: BASE_STATS });
+}
+
+function incrementalDerived(
+  evaluator: IncrementalEvaluator,
+  loadout: Loadout,
+  bannedSlots: string[],
+): DerivedState {
+  return evaluator.evaluate({ loadout, bannedSlots, baseStats: BASE_STATS }).derived;
 }
 
 let noticeSeq = 0;
 
 export const useStore = create<StoreState>((set, get) => {
   const refreshPreview = (draftLoadout: Loadout, bannedSlots: string[], alive: boolean) => {
-    const { diagnostics, derived } = previewDraft({
-      catalog,
-      inventory,
-      draft: draftLoadout,
-      bannedSlots,
-      alive,
-      baseStats: BASE_STATS,
-    });
+    const { diagnostics, derived } = previewDraft(
+      {
+        catalog,
+        inventory,
+        draft: draftLoadout,
+        bannedSlots,
+        alive,
+        baseStats: BASE_STATS,
+      },
+      draftEvaluator.asDeriveFn(),
+    );
     return { draftDiagnostics: diagnostics, draftDerived: derived };
   };
 
@@ -98,15 +131,16 @@ export const useStore = create<StoreState>((set, get) => {
     alive: true,
 
     activeLoadout: initialLoadout,
-    activeDerived: derive(initialLoadout, []),
+    activeDerived: fullDerived(initialLoadout, []),
     revision: 0,
 
     draftLoadout: { ...initialLoadout },
     draftDiagnostics: [],
-    draftDerived: derive(initialLoadout, []),
+    draftDerived: incrementalDerived(draftEvaluator, initialLoadout, []),
 
     lastChanges: null,
     lastPublishErrors: null,
+    lastVerdict: null,
     history: [],
     notices: [],
 
@@ -163,17 +197,20 @@ export const useStore = create<StoreState>((set, get) => {
 
     publish: () => {
       const s = get();
-      const result = publishRevision({
-        catalog: s.catalog,
-        inventory: s.inventory,
-        draft: s.draftLoadout,
-        active: s.activeLoadout,
-        activeDerived: s.activeDerived,
-        bannedSlots: s.bannedSlots,
-        alive: s.alive,
-        baseStats: s.baseStats,
-        currentRevision: s.revision,
-      });
+      const result = publishRevision(
+        {
+          catalog: s.catalog,
+          inventory: s.inventory,
+          draft: s.draftLoadout,
+          active: s.activeLoadout,
+          activeDerived: s.activeDerived,
+          bannedSlots: s.bannedSlots,
+          alive: s.alive,
+          baseStats: s.baseStats,
+          currentRevision: s.revision,
+        },
+        activeEvaluator.asDeriveFn(),
+      );
 
       if (!result.ok || !result.loadout || !result.derived || !result.changes) {
         set({ lastPublishErrors: result.diagnostics });
@@ -184,6 +221,41 @@ export const useStore = create<StoreState>((set, get) => {
         return;
       }
 
+      // 完整求值路径作为参照：同一负载全量重算，逐规则对照来源/激活/原因与能力增减
+      const referenceDerived = fullDerived(result.loadout!, s.bannedSlots);
+      const referenceChanges = publishRevision({
+        catalog: s.catalog,
+        inventory: s.inventory,
+        draft: result.loadout,
+        active: s.activeLoadout,
+        activeDerived: s.activeDerived,
+        bannedSlots: s.bannedSlots,
+        alive: s.alive,
+        baseStats: s.baseStats,
+        currentRevision: s.revision,
+      }).changes!;
+      const eq = compareDerived(referenceDerived, result.derived);
+      const reportDiffs = compareChangeReports(referenceChanges, result.changes);
+      // 撤销事件对照：活动方案的全量派生只算一次，两条路径都相对同一基线比较
+      const beforeReference = fullDerived(s.activeLoadout, s.bannedSlots);
+      const refSourceDiff = diffSources(beforeReference, referenceDerived);
+      const incSourceDiff = diffSources(beforeReference, result.derived);
+      const verdict: AuditSnapshot = {
+        revision: result.revision!,
+        backend: 'incremental',
+        metrics: activeEvaluator.lastRunMetrics,
+        equivalence: {
+          equivalent:
+            eq.equivalent &&
+            reportDiffs.length === 0 &&
+            JSON.stringify(incSourceDiff) === JSON.stringify(refSourceDiff),
+          differences: eq.differences.map((d) => d.detail),
+          changeReportDifferences: reportDiffs,
+          incrementalDeactivated: incSourceDiff.deactivated,
+          referenceDeactivated: refSourceDiff.deactivated,
+        },
+      };
+
       set({
         activeLoadout: result.loadout,
         activeDerived: result.derived,
@@ -193,9 +265,12 @@ export const useStore = create<StoreState>((set, get) => {
         draftDiagnostics: result.diagnostics,
         lastChanges: result.changes,
         lastPublishErrors: null,
-        history: [...s.history, { revision: result.revision!, changes: result.changes }],
+        lastVerdict: verdict,
+        history: [...s.history, { revision: result.revision!, changes: result.changes, verdict }],
       });
-      pushNotice({ kind: 'info', message: `修订 ${result.revision} 已原子发布，派生状态全量重算完成` });
+      // 草稿求值器需要与已发布负载对齐，否则后续编辑会基于过期缓存基准
+      incrementalDerived(draftEvaluator, result.loadout, s.bannedSlots);
+      pushNotice({ kind: 'info', message: `修订 ${result.revision} 已原子发布，增量求值与全量参照逐规则一致` });
     },
 
     toggleBan: (slot) => {
@@ -204,7 +279,7 @@ export const useStore = create<StoreState>((set, get) => {
         ? s.bannedSlots.filter((x) => x !== slot)
         : [...s.bannedSlots, slot];
       // 封禁属于角色状态变化：同时作用于草稿与活动负载（活动负载派生状态随之重算）
-      const activeDerived = derive(s.activeLoadout, bannedSlots);
+      const activeDerived = fullDerived(s.activeLoadout, bannedSlots);
       set({
         bannedSlots,
         activeDerived,
